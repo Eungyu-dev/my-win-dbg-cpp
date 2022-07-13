@@ -91,6 +91,15 @@ TCHAR* GetProcessNameFromID(DWORD processID) {
 			return nullptr;
 		}
 
+		/** Retrieves the base name of the specified module.
+		  -> 디버거 개발용 함수. 다른 용도로 쓸꺼면 다른 함수 사용해야 함.
+			DWORD GetModuleBaseNameA(
+			  [in]           HANDLE  hProcess,
+			  [in, optional] HMODULE hModule,
+			  [out]          LPSTR   lpBaseName,
+			  [in]           DWORD   nSize
+			);
+		*/
 		GetModuleBaseName(hProcess, hModule, szProcessName, MAX_PATH - 1);
 	}
 
@@ -107,6 +116,13 @@ int wmain(int argc, wchar_t* argv[], wchar_t* envp[]){
 		return -1;
 	}
 
+	/** Retrieves the process identifier for each process object in the system.
+		BOOL EnumProcesses(
+		  [out] DWORD   *lpidProcess,
+		  [in]  DWORD   cb,
+		  [out] LPDWORD lpcbNeeded
+		);
+	*/
 	if (!EnumProcesses(aProcesses, 16384 * sizeof(DWORD), &cbNeeded)) {
 		_tprintf(TEXT("LastError: %hs"), GetLastErrorAsString().c_str());
 		return -1;
