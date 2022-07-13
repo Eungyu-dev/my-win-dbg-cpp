@@ -1,3 +1,5 @@
+#define PSAPI_VERSION 1
+
 #include <windows.h>
 #include <stdio.h>
 #include <psapi.h>
@@ -5,6 +7,11 @@
 
 #include <iostream>
 #include <string>
+
+
+const int MAX_PROCESS = 16384;
+const int MAX_MODULES = 16384;
+
 
 std::string GetLastErrorAsString()
 {
@@ -47,20 +54,21 @@ TCHAR* GetProcessNameFromID(DWORD processID) {
 		  [in] BOOL  bInheritHandle,	// 상속여부
 		  [in] DWORD dwProcessId		// System process, Client Server Run-Time Subsystem, 0이면 실패.
 		);*/
+	// 다른 프로세스에 대해 모든 권한을 가지려면 SeDebugPrivilege 얻어야 함.
+	// https://docs.microsoft.com/en-us/windows/win32/secauthz/enabling-and-disabling-privileges-in-c--
 	HANDLE hProcess = OpenProcess(
 		PROCESS_QUERY_INFORMATION | PROCESS_VM_READ,
 		FALSE,
 		processID
 	);
-
 	if (hProcess == NULL) {
-		_tprintf(TEXT("PID %u\tLastError: %hs"), processID, GetLastErrorAsString().c_str());
+		_tprintf(TEXT("@OpenProcess PID %u\tLastError: %hs"), processID, GetLastErrorAsString().c_str());
 		return nullptr;
 	}
 
 	HMODULE hModule;
 	DWORD cbNeeded;
-	TCHAR* szProcessName = nullptr;
+
 	/** Retrieves a handle for each module in the specified process that meets the specified filter criteria.
 		BOOL EnumProcessModulesEx(
 		  [in]  HANDLE  hProcess,
@@ -76,43 +84,111 @@ TCHAR* GetProcessNameFromID(DWORD processID) {
 		sizeof(hModule),
 		&cbNeeded,
 		LIST_MODULES_ALL
-	)) {
-		/** Retrieves the base name of the specified module.
-			DWORD GetModuleBaseNameW(
-			  [in]           HANDLE  hProcess,
-			  [in, optional] HMODULE hModule,
-			  [out]          LPWSTR  lpBaseName,
-			  [in]           DWORD   nSize
-			);
-		*/
-		szProcessName = (TCHAR*)calloc(MAX_PATH, sizeof(TCHAR));
-		if (szProcessName == NULL) {
-			_tprintf(TEXT("PID %u\tLastError: %hs"), processID, GetLastErrorAsString().c_str());
-			return nullptr;
-		}
+	) == 0) {
+		_tprintf(TEXT("@EnumProcessModulesEx PID %u\tLastError: %hs"), processID, GetLastErrorAsString().c_str());
+		return nullptr;
+	}
 
-		/** Retrieves the base name of the specified module.
-		  -> 디버거 개발용 함수. 다른 용도로 쓸꺼면 다른 함수 사용해야 함.
-			DWORD GetModuleBaseNameA(
-			  [in]           HANDLE  hProcess,
-			  [in, optional] HMODULE hModule,
-			  [out]          LPSTR   lpBaseName,
-			  [in]           DWORD   nSize
-			);
-		*/
-		GetModuleBaseName(hProcess, hModule, szProcessName, MAX_PATH - 1);
+	/** Retrieves the base name of the specified module.
+		DWORD GetModuleBaseNameW(
+		  [in]           HANDLE  hProcess,
+		  [in, optional] HMODULE hModule,
+		  [out]          LPWSTR  lpBaseName,
+		  [in]           DWORD   nSize
+		);
+	*/
+	TCHAR* szProcessName = (TCHAR*)calloc(MAX_PATH, sizeof(TCHAR));
+	if (szProcessName == NULL) {
+		_tprintf(TEXT("@calloc PID %u\tLastError: %hs"), processID, GetLastErrorAsString().c_str());
+		return nullptr;
+	}
+
+	/** Retrieves the base name of the specified module.
+	  -> 디버거 개발용 함수. 다른 용도로 쓸꺼면 다른 함수 사용해야 함.
+		DWORD GetModuleBaseNameA(
+		  [in]           HANDLE  hProcess,
+		  [in, optional] HMODULE hModule,
+		  [out]          LPSTR   lpBaseName,
+		  [in]           DWORD   nSize
+		);
+	*/
+	if (GetModuleBaseName(hProcess, hModule, szProcessName, MAX_PATH) == 0) {
+		_tprintf(TEXT("@GetModuleBaseName PID %u\tLastError: %hs"), processID, GetLastErrorAsString().c_str());
+		return nullptr;
 	}
 
 	CloseHandle(hProcess);
 	return szProcessName;
 }
 
+TCHAR** GetLoadedModuleNameFromPrcoessID(DWORD processID) {
+	HMODULE* hModules = (HMODULE*)calloc(MAX_MODULES, sizeof(HMODULE));
+	if (hModules == NULL) {
+		_tprintf(TEXT("@calloc PID %u\tLastError: %hs"), processID, GetLastErrorAsString().c_str());
+		return nullptr;
+	}
+
+	DWORD cbNeeded;
+	HANDLE hProcess = OpenProcess(
+		PROCESS_QUERY_INFORMATION | PROCESS_VM_READ,
+		FALSE,
+		processID
+	);
+	if (hProcess == NULL) {
+		_tprintf(TEXT("@OpenProcess PID %u\tLastError: %hs"), processID, GetLastErrorAsString().c_str());
+		return nullptr;
+	}
+
+	/** Retrieves a handle for each module in the specified process that meets the specified filter criteria.
+		BOOL EnumProcessModulesEx(
+		  [in]  HANDLE  hProcess,
+		  [out] HMODULE *lphModule,
+		  [in]  DWORD   cb,
+		  [out] LPDWORD lpcbNeeded,
+		  [in]  DWORD   dwFilterFlag
+		);
+	*/
+	if (EnumProcessModulesEx(hProcess, hModules, MAX_MODULES * sizeof(HMODULE), &cbNeeded, LIST_MODULES_ALL) == 0) {
+		_tprintf(TEXT("@EnumProcessModulesEx PID %u\tLastError: %hs"), processID, GetLastErrorAsString().c_str());
+		return nullptr;
+	}
+
+	TCHAR** aModuleName = (TCHAR**)calloc(cbNeeded / sizeof(HMODULE), sizeof(TCHAR*));
+	if (aModuleName == NULL) {
+		_tprintf(TEXT("@calloc PID %u\tLastError: %hs"), processID, GetLastErrorAsString().c_str());
+		return nullptr;
+	}
+
+	for (int i = 0; i < (cbNeeded / sizeof(HMODULE)); i++) {
+		aModuleName[i] = (TCHAR*)calloc(MAX_PATH, sizeof(TCHAR));
+		if (aModuleName[i] == NULL) {
+			_tprintf(TEXT("@calloc PID %u\tLastError: %hs"), processID, GetLastErrorAsString().c_str());
+			return nullptr;
+		}
+
+		/** Retrieves the fully qualified path for the file containing the specified module.
+			DWORD GetModuleFileNameExW(
+			  [in]           HANDLE  hProcess,
+			  [in, optional] HMODULE hModule,
+			  [out]          LPWSTR  lpFilename,
+			  [in]           DWORD   nSize
+			);
+		*/
+		if (GetModuleFileNameEx(hProcess, hModules[i], aModuleName[i], MAX_PATH) == 0) {
+			_tprintf(TEXT("@GetModuleFileNameEx PID %u\tLastError: %hs"), processID, GetLastErrorAsString().c_str());
+			return nullptr;
+		}
+	}
+
+	CloseHandle(hProcess);
+	return aModuleName;
+}
 
 int wmain(int argc, wchar_t* argv[], wchar_t* envp[]){
-	DWORD cProcesses, cbNeeded;
-	DWORD* aProcesses = (DWORD*)calloc(16384, sizeof(DWORD));
+	DWORD cProcesses, cModules, cbNeeded;
+	DWORD* aProcesses = (DWORD*)calloc(MAX_PROCESS, sizeof(DWORD));
 	if (aProcesses == nullptr) {
-		_tprintf(TEXT("LastError: %hs"), GetLastErrorAsString().c_str());
+		_tprintf(TEXT("@calloc LastError: %hs"), GetLastErrorAsString().c_str());
 		return -1;
 	}
 
@@ -123,8 +199,8 @@ int wmain(int argc, wchar_t* argv[], wchar_t* envp[]){
 		  [out] LPDWORD lpcbNeeded
 		);
 	*/
-	if (!EnumProcesses(aProcesses, 16384 * sizeof(DWORD), &cbNeeded)) {
-		_tprintf(TEXT("LastError: %hs"), GetLastErrorAsString().c_str());
+	if (!EnumProcesses(aProcesses, MAX_PROCESS * sizeof(DWORD), &cbNeeded)) {
+		_tprintf(TEXT("@EnumProcesses\tLastError: %hs"), GetLastErrorAsString().c_str());
 		return -1;
 	}
 
@@ -134,11 +210,28 @@ int wmain(int argc, wchar_t* argv[], wchar_t* envp[]){
 	for (int i = 0; i < (size_t)cProcesses; i++) {
 		if (aProcesses[i] != 0) {
 			TCHAR* processName = GetProcessNameFromID(aProcesses[i]);
-			if (processName != nullptr) {
-				_tprintf(TEXT("PID %u\tName: %s\n"), aProcesses[i], processName);
+			if (processName == nullptr) {
+				_tprintf(TEXT("@GetProcessNameFromID\tLastError: %hs"), GetLastErrorAsString().c_str());
+				continue;
 			}
+			_tprintf(TEXT("PID %u\tProcess Name: %s\n"), aProcesses[i], processName);
+
+			TCHAR** aModuleName = GetLoadedModuleNameFromPrcoessID(aProcesses[i]);
+			if (aModuleName == nullptr) {
+				_tprintf(TEXT("@GetModuleNameFromPrcoessID LastError: %hs"), GetLastErrorAsString().c_str());
+				return -1;
+			}
+			cModules = (DWORD)_msize(aModuleName) / sizeof(TCHAR*);
+
+			for (int j = 0; j < (size_t)cModules; j++) {
+				_tprintf(TEXT("\t\tDLL: %s\n"), aModuleName[j]);
+				free(aModuleName[j]);
+			}
+			free(aModuleName);
 		}
+		_tprintf(TEXT("\n"));
 	}
+	free(aProcesses);
 
 	return 0;
 }
